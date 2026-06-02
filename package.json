@@ -1,0 +1,9 @@
+{
+  "name": "daisy-simple-voicebot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "vercel dev",
+    "serve": "node scripts/local-server.js"
+  }
+}
