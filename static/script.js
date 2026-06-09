@@ -16,6 +16,7 @@ if (!SpeechRecognition) {
 let recognition = null;
 let isActive = false;
 let isSpeaking = false;
+let isThinking = false;
 let greetingDone = false;
 
 // Helpers: Orb states
@@ -37,15 +38,8 @@ function isWakeWord(text) {
     return triggers.some((trigger) => lower.includes(trigger));
 }
 
-// Start listening
-function startListening() {
-    if (!isActive || isSpeaking || !SpeechRecognition) return;
-
-    if (recognition) {
-        try { recognition.abort(); } catch (error) {}
-        recognition = null;
-    }
-
+// Initialize SpeechRecognition once if supported
+if (SpeechRecognition) {
     recognition = new SpeechRecognition();
     recognition.lang = "en-US";
     recognition.continuous = true;
@@ -53,7 +47,7 @@ function startListening() {
 
     recognition.onstart = () => {
         console.log("[Daisy] Recognition started");
-        if (!isSpeaking) {
+        if (!isSpeaking && !isThinking) {
             setOrb("listening");
             statusText.innerText = greetingDone
                 ? "Listening... ask me anything"
@@ -71,21 +65,21 @@ function startListening() {
             if (!greetingDone && isWakeWord(transcript)) {
                 console.log("[Daisy] Wake word detected");
                 greetingDone = true;
-
+                isThinking = true;
                 try { recognition.abort(); } catch (error) {}
-                speak("How can I help you dad?");
+                speak("How can I help you today?");
                 return;
             }
-
             if (greetingDone) {
-                console.log("[Daisy] Sending to Gemini:", transcript);
+                console.log("[Daisy] Sending to Sheet Agent:", transcript);
+                isThinking = true;
                 try { recognition.abort(); } catch (error) {}
-                askGemini(transcript);
+                askSheetAgent(transcript);
                 return;
             }
-
-            console.log("[Daisy] Not a wake word, still listening...");
         }
+
+        console.log("[Daisy] Not a wake word, still listening...");
     };
 
     recognition.onerror = (event) => {
@@ -98,52 +92,59 @@ function startListening() {
             return;
         }
 
-        if (isActive && !isSpeaking) {
+        // Only retry starting if active and not already processing speech or thinking
+        if (isActive && !isSpeaking && !isThinking) {
             setTimeout(startListening, 800);
         }
     };
 
     recognition.onend = () => {
         console.log("[Daisy] Recognition ended");
-        if (isActive && !isSpeaking) {
+        if (isActive && !isSpeaking && !isThinking) {
             setTimeout(startListening, 400);
         }
     };
+}
+
+// Start listening function
+function startListening() {
+    console.log("[Daisy] startListening called", { isActive, isSpeaking, isThinking });
+
+    if (!isActive || isSpeaking || isThinking || !recognition) {
+        console.log("[Daisy] startListening stopped by condition");
+        return;
+    }
 
     try {
         recognition.start();
         console.log("[Daisy] Calling recognition.start()");
     } catch (error) {
-        console.log("[Daisy] Start failed:", error.message);
-        setTimeout(startListening, 800);
+        console.log("[Daisy] Start failed (likely already running):", error.message);
     }
 }
 
 // Speak with SpeechSynthesis
 function speak(text) {
     isSpeaking = true;
+    isThinking = false;
     setOrb("speaking");
     statusText.innerText = "Daisy is speaking...";
 
+    // Ensure recognition is stopped while speaking
     if (recognition) {
         try { recognition.abort(); } catch (error) {}
-        recognition = null;
     }
 
-    const utterance = new SpeechSynthesisUtterance(text);
+    let utterance = new SpeechSynthesisUtterance(text);
+
     utterance.lang = "en-US";
     utterance.rate = 1;
     utterance.pitch = 1.1;
 
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find((voice) =>
-        /zira|samantha|google.*female|female/i.test(voice.name)
-    );
-    if (preferred) utterance.voice = preferred;
-
     utterance.onend = () => {
         console.log("[Daisy] Done speaking");
         isSpeaking = false;
+
         if (isActive) {
             startListening();
         } else {
@@ -151,13 +152,11 @@ function speak(text) {
         }
     };
 
-    utterance.onerror = (error) => {
-        console.log("[Daisy] Speech error:", error);
+    utterance.onerror = (event) => {
+        console.log("[Daisy] Speech error:", event);
         isSpeaking = false;
         if (isActive) {
             startListening();
-        } else {
-            setOrb("idle");
         }
     };
 
@@ -165,13 +164,13 @@ function speak(text) {
     window.speechSynthesis.speak(utterance);
 }
 
-// Ask the Gemini backend
-async function askGemini(question) {
+// Ask the Python Google Sheet backend
+async function askSheetAgent(question) {
     setOrb("speaking");
     statusText.innerText = "Thinking...";
 
     try {
-        const res = await fetch("/ask", {
+        const res = await fetch("http://127.0.0.1:8000/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question })
@@ -181,22 +180,37 @@ async function askGemini(question) {
             throw new Error(data.error || `Request failed with ${res.status}`);
         }
 
-        console.log("[Daisy] Gemini replied:", data.reply);
+        console.log("[Daisy] Sheet Agent replied:", data.reply);
+        isThinking = false;
         speak(data.reply || "I did not get a clear answer.");
     } catch (error) {
         console.error("[Daisy] Backend error:", error);
+        isThinking = false;
         speak("Sorry, I could not connect to my brain right now.");
     }
 }
 
 // Button handlers
-startBtn.addEventListener("click", () => {
-    if (isActive || !SpeechRecognition) return;
-    console.log("[Daisy] START clicked");
+startBtn.addEventListener("click", async () => {
+    console.log("[Daisy] START button clicked");
+
+    try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("[Daisy] Microphone allowed");
+    } catch (error) {
+        console.error("[Daisy] Microphone error:", error);
+        statusText.innerText = "Please allow microphone access.";
+        return;
+    }
+
     isActive = true;
+    isSpeaking = false;
+    isThinking = false;
     greetingDone = false;
 
-    window.speechSynthesis.getVoices();
+    setOrb("listening");
+    statusText.innerText = "Listening... say Hey Daisy";
+
     startListening();
 });
 
@@ -204,12 +218,12 @@ stopBtn.addEventListener("click", () => {
     console.log("[Daisy] STOP clicked");
     isActive = false;
     isSpeaking = false;
+    isThinking = false;
     greetingDone = false;
 
     window.speechSynthesis.cancel();
     if (recognition) {
         try { recognition.abort(); } catch (error) {}
-        recognition = null;
     }
     setOrb("idle");
     statusText.innerText = "Stopped. Click Start to begin.";

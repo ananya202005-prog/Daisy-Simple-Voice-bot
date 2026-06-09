@@ -5,5 +5,11 @@
   "scripts": {
     "start": "vercel dev",
     "serve": "node scripts/local-server.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "vercel": "^44.0.0"
   }
 }
